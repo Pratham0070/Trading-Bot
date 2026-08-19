@@ -5,7 +5,6 @@ import datetime
 import os
 
 def fetch_data():
-    # Fetch Nifty 50 and India VIX data for the last 2 years
     end_date = datetime.datetime.now()
     start_date = end_date - datetime.timedelta(days=730)
     
@@ -13,16 +12,22 @@ def fetch_data():
     nifty = yf.download('^NSEI', start=start_date, end=end_date, progress=False)
     vix = yf.download('^INDIAVIX', start=start_date, end=end_date, progress=False)
     
-    # Combine closing prices
+    # Handle both single and multi-level columns from yfinance
+    if isinstance(nifty.columns, pd.MultiIndex):
+        nifty_close = nifty['Close'].iloc[:, 0]
+        vix_close = vix['Close'].iloc[:, 0]
+    else:
+        nifty_close = nifty['Close']
+        vix_close = vix['Close']
+    
     df = pd.DataFrame({
-        'Nifty': nifty['Close'],
-        'VIX': vix['Close']
+        'Nifty': nifty_close,
+        'VIX': vix_close
     }).dropna()
     
     return df
 
 def calculate_pillars(df):
-    # Daily Returns
     df['Returns'] = np.log(df['Nifty'] / df['Nifty'].shift(1))
     
     # Pillar 1: Mean Reversion (Z-Score)
@@ -33,7 +38,7 @@ def calculate_pillars(df):
     # Pillar 2: Leverage Effect (VIX Change)
     df['VIX_Change'] = df['VIX'].diff()
     
-    # Pillar 3: Volatility Clustering (Is current vol below historical median?)
+    # Pillar 3: Volatility Clustering
     df['Realized_Vol_20d'] = df['Returns'].rolling(window=20).std() * np.sqrt(252) * 100
     df['Vol_Median_252d'] = df['Realized_Vol_20d'].rolling(window=252).median()
     
@@ -48,16 +53,13 @@ def calculate_pillars(df):
     return df.dropna()
 
 def generate_signal(row):
-    # Triggers (GAS PEDAL)
-    is_oversold = row['Z_Score'] < -2.0
-    fear_spike = row['VRP'] > (row['VRP_SMA_90'] + row['VRP_STD_90'])
+    is_oversold = float(row['Z_Score']) < -2.0
+    fear_spike = float(row['VRP']) > (float(row['VRP_SMA_90']) + float(row['VRP_STD_90']))
     
-    # Filters (BRAKES)
-    safe_regime = row['Nifty'] > row['SMA_200'] # Must be in a Bull Regime
-    vol_contracting = row['VIX_Change'] < 0     # VIX must be dropping today
-    calm_cluster = row['Realized_Vol_20d'] < row['Vol_Median_252d']
+    safe_regime = float(row['Nifty']) > float(row['SMA_200'])
+    vol_contracting = float(row['VIX_Change']) < 0
+    calm_cluster = float(row['Realized_Vol_20d']) < float(row['Vol_Median_252d'])
     
-    # Logic: If it is safe, and a trigger hits, BUY.
     if safe_regime and vol_contracting and calm_cluster:
         if is_oversold or fear_spike:
             return "BUY"
@@ -68,27 +70,25 @@ def run_bot():
     df = fetch_data()
     df = calculate_pillars(df)
     
-    # Apply logic to the most recent day
     latest_data = df.iloc[-1]
     signal = generate_signal(latest_data)
     
-    # Prepare paper trading record
     record = {
         'Date': datetime.datetime.now().strftime("%Y-%m-%d"),
-        'Nifty_Close': round(latest_data['Nifty'], 2),
-        'VIX_Close': round(latest_data['VIX'], 2),
+        'Nifty_Close': round(float(latest_data['Nifty']), 2),
+        'VIX_Close': round(float(latest_data['VIX']), 2),
         'Signal': signal,
         'Action': "Bought 1 Lakh worth of NIFTYBEES" if signal == "BUY" else "No Action"
     }
     
     print(f"\n--- ALGO REPORT FOR {record['Date']} ---")
     print(f"Nifty: {record['Nifty_Close']} | VIX: {record['VIX_Close']}")
-    print(f"Pillar Check: Regime Safe? {latest_data['Nifty'] > latest_data['SMA_200']}")
     print(f"SIGNAL: {record['Signal']}")
     
-    # Save to CSV log
+    # Explicitly pass index=[0] to prevent scalar value errors
+    log_df = pd.DataFrame(record, index=[0])
+    
     file_exists = os.path.isfile('paper_trading_log.csv')
-    log_df = pd.DataFrame([record])
     log_df.to_csv('paper_trading_log.csv', mode='a', header=not file_exists, index=False)
     print("Logged to paper_trading_log.csv")
 
