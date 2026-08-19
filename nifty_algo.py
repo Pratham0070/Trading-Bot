@@ -12,14 +12,20 @@ def fetch_data():
     nifty = yf.download('^NSEI', start=start_date, end=end_date, progress=False)
     vix = yf.download('^INDIAVIX', start=start_date, end=end_date, progress=False)
     
-    # THE FIX: .squeeze() forces yfinance DataFrames into 1D Pandas Series.
-    # This prevents the dictionary from failing to build the DataFrame.
-    df = pd.DataFrame({
-        'Nifty': nifty['Close'].squeeze(),
-        'VIX': vix['Close'].squeeze()
-    }).dropna()
+    # Fail-safe if Yahoo blocks the GitHub Cloud IP
+    if nifty.empty or vix.empty:
+        print("ERROR: Yahoo Finance returned no data. Exiting safely.")
+        return None
+
+    # Safely extract columns without risking the "scalar" bug
+    nifty_close = nifty['Close'].iloc[:, 0] if isinstance(nifty.columns, pd.MultiIndex) else nifty['Close']
+    vix_close = vix['Close'].iloc[:, 0] if isinstance(vix.columns, pd.MultiIndex) else vix['Close']
     
-    return df
+    # Safely combine the columns using pd.concat
+    df = pd.concat([nifty_close, vix_close], axis=1)
+    df.columns = ['Nifty', 'VIX']
+    
+    return df.dropna()
 
 def calculate_pillars(df):
     df['Returns'] = np.log(df['Nifty'] / df['Nifty'].shift(1))
@@ -57,8 +63,18 @@ def generate_signal(row):
 
 def run_bot():
     df = fetch_data()
+    
+    # Stop the script gracefully if data fails to download
+    if df is None or df.empty:
+        return
+        
     df = calculate_pillars(df)
     
+    # Stop if we don't have enough days to calculate the 200-day moving average
+    if df.empty:
+        print("Not enough historical data to calculate pillars.")
+        return
+        
     latest_data = df.iloc[-1]
     signal = generate_signal(latest_data)
     
@@ -74,7 +90,6 @@ def run_bot():
     print(f"Nifty: {record['Nifty_Close']} | VIX: {record['VIX_Close']}")
     print(f"SIGNAL: {record['Signal']}")
     
-    # THE FIX: Wrapping `record` in a list [record] ensures it creates a row properly
     log_df = pd.DataFrame([record])
     
     file_exists = os.path.isfile('paper_trading_log.csv')
